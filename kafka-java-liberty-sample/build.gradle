@@ -41,6 +41,8 @@ dependencies {
   compile 'com.fasterxml.jackson.core:jackson-annotations:2.9.5'
   compile 'com.fasterxml.jackson.core:jackson-core:2.9.5'
   compile 'com.fasterxml.jackson.core:jackson-databind:2.9.5'
+  compile 'io.opentracing.contrib:opentracing-kafka-client:0.1.11'
+  compile 'io.jaegertracing:jaeger-client:1.1.0'
 }
 
 // move generated war file into the DefaultServer/apps diretory

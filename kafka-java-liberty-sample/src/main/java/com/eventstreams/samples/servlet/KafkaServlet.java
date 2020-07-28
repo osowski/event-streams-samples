@@ -19,22 +19,6 @@
  */
 package com.eventstreams.samples.servlet;
 
-import com.eventstreams.samples.env.Environment;
-import com.eventstreams.samples.env.EventStreamsCredentials;
-import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.TopicPartition;
-import org.apache.log4j.Level;
-import org.apache.log4j.Logger;
-
-import javax.servlet.annotation.WebServlet;
-import javax.servlet.http.HttpServlet;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -48,6 +32,28 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Properties;
+
+import javax.servlet.annotation.WebServlet;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.log4j.Level;
+import org.apache.log4j.Logger;
+
+import com.eventstreams.samples.env.Environment;
+import com.eventstreams.samples.env.EventStreamsCredentials;
+
+import io.jaegertracing.Configuration;
+import io.opentracing.Tracer;
+import io.opentracing.util.GlobalTracer;
 
 @WebServlet("/KafkaServlet")
 public class KafkaServlet extends HttpServlet {
@@ -68,7 +74,7 @@ public class KafkaServlet extends HttpServlet {
     private int producedMessages = 0;
     private String currentConsumedMessage;
     private boolean messageProduced = false;
-
+    
     /**
      * Intialising the KafkaServlet
      */
@@ -94,7 +100,7 @@ public class KafkaServlet extends HttpServlet {
 
         String topics = restApi.get("/admin/topics", false);
         logger.log(Level.WARN, "Topics: " + topics);
-
+        
         // Initialize Kafka Producer
         kafkaProducer = new KafkaProducer(getClientConfiguration(bootstrapServers, credentials.getApiKey(), true));
 
@@ -164,7 +170,20 @@ public class KafkaServlet extends HttpServlet {
         Properties props = new Properties();
         InputStream propsStream;
         String fileName = resourceDir + File.separator;
-
+        
+        // If tracing is configured, enable it
+        if (System.getenv("JAEGER_SERVICE_NAME") != null) {
+          final Tracer tracer = Configuration.fromEnv().getTracer();
+          GlobalTracer.registerIfAbsent(tracer);
+          
+          // And add the tracing interceptors to the configuration
+          if(isProducer) {
+        	  props.setProperty("interceptor.classes", "io.opentracing.contrib.kafka.TracingProducerInterceptor");
+          } else {
+        	  props.setProperty("interceptor.classes", "io.opentracing.contrib.kafka.TracingConsumerInterceptor");
+          }
+        }
+        
         if (isProducer) {
             fileName += "producer.properties";
         } else {
@@ -187,7 +206,9 @@ public class KafkaServlet extends HttpServlet {
         String saslJaasConfig = props.getProperty("sasl.jaas.config");
         saslJaasConfig = saslJaasConfig.replace("APIKEY", apikey);
         props.setProperty("sasl.jaas.config", saslJaasConfig);
+        
 
+        
         logger.log(Level.WARN, "Using properties: " + props);
 
         return props;
