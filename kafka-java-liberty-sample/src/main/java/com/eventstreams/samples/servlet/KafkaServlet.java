@@ -1,5 +1,5 @@
 /**
- * Copyright 2016 IBM
+* Copyright 2016 IBM
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,22 +19,6 @@
  */
 package com.eventstreams.samples.servlet;
 
-import com.eventstreams.samples.env.Environment;
-import com.eventstreams.samples.env.EventStreamsCredentials;
-import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.TopicPartition;
-import org.apache.log4j.Level;
-import org.apache.log4j.Logger;
-
-import javax.servlet.annotation.WebServlet;
-import javax.servlet.http.HttpServlet;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -48,6 +32,34 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Properties;
+import java.util.UUID;
+
+import javax.servlet.annotation.WebServlet;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.log4j.Level;
+import org.apache.log4j.Logger;
+
+import com.eventstreams.samples.env.Environment;
+import com.eventstreams.samples.env.EventStreamsCredentials;
+
+import io.jaegertracing.Configuration;
+import io.opentracing.Tracer;
+import io.opentracing.contrib.kafka.SpanDecorator;
+import io.opentracing.contrib.kafka.TracingKafkaConsumer;
+import io.opentracing.contrib.kafka.TracingKafkaConsumerBuilder;
+import io.opentracing.contrib.kafka.TracingKafkaProducer;
+import io.opentracing.contrib.kafka.TracingKafkaProducerBuilder;
+import io.opentracing.util.GlobalTracer;
 
 @WebServlet("/KafkaServlet")
 public class KafkaServlet extends HttpServlet {
@@ -61,13 +73,21 @@ public class KafkaServlet extends HttpServlet {
             + "resources";
     private final String topic = "testTopic";
 
-    private KafkaProducer<String, String> kafkaProducer;
+    private TracingKafkaProducer<String, String> kafkaProducer;
     private String producedMessage;
     private ConsumerRunnable consumerRunnable;
     private Thread consumerThread = null;
     private int producedMessages = 0;
     private String currentConsumedMessage;
     private boolean messageProduced = false;
+
+    // Operations Dashboard requires a tag "externalAppType"
+    //private static final String EXTERNAL_APP_TYPE_TAG = "externalAppType";
+    private static final String externalAppType = "kafka-tracing-sample-wrap";
+
+    // Also generate a second tag "businessId" to use in the Operations Dashbaord filters
+    //private static final String BUSINESS_ID_TAG = "businessId";
+    private	static final String businessId = UUID.randomUUID().toString();
 
     /**
      * Intialising the KafkaServlet
@@ -95,11 +115,22 @@ public class KafkaServlet extends HttpServlet {
         String topics = restApi.get("/admin/topics", false);
         logger.log(Level.WARN, "Topics: " + topics);
 
+        // Configure tracing from the environment
+        final Tracer tracer = Configuration.fromEnv().getTracer();
+        GlobalTracer.registerIfAbsent(tracer);
+
+        EventStreamsSpanDecorator spanDecorator = new EventStreamsSpanDecorator(externalAppType, businessId);
+
         // Initialize Kafka Producer
-        kafkaProducer = new KafkaProducer(getClientConfiguration(bootstrapServers, credentials.getApiKey(), true));
+        KafkaProducer<String, String> bareProducer = new KafkaProducer<>(getClientConfiguration(bootstrapServers, credentials.getApiKey(), true));
+        
+        // Wrap the local KafkaProducer with a TracingKafkaProduer that adds the required tags
+  		TracingKafkaProducerBuilder<String, String> pBuilder = new TracingKafkaProducerBuilder<>(bareProducer, tracer);
+        pBuilder.withDecorators(Arrays.asList(SpanDecorator.STANDARD_TAGS, spanDecorator));
+        kafkaProducer = pBuilder.build();
 
         // Initialise Kafka Consumer
-        consumerRunnable = new ConsumerRunnable(bootstrapServers, credentials.getApiKey(), topic);
+        consumerRunnable = new ConsumerRunnable(bootstrapServers, credentials.getApiKey(), topic, tracer, spanDecorator);
         consumerThread = new Thread(consumerRunnable);
         consumerThread.start();
 
@@ -203,7 +234,7 @@ public class KafkaServlet extends HttpServlet {
 
         String key = "key";
         // Push a message into the list to be sent.
-        MessageList<String> list = new MessageList();
+        MessageList<String> list = new MessageList<String>();
         producedMessage = "This is a test message, msgId=" + producedMessages;
         list.push(producedMessage);
 
@@ -233,14 +264,20 @@ public class KafkaServlet extends HttpServlet {
      * Kafka consumer runnable which can be used to create and run consumer as a separate thread.
      */
     class ConsumerRunnable implements Runnable {
-        private final KafkaConsumer<String, String> kafkaConsumer;
+        private final TracingKafkaConsumer<String, String> kafkaConsumer;
         private final List<String> consumedMessages = new ArrayList<>();
 
         private boolean closing = false;
-
-        ConsumerRunnable(String broker, String apikey, String topic) {
-
-            kafkaConsumer = new KafkaConsumer<>(getClientConfiguration(broker, apikey, false));
+        
+        ConsumerRunnable(String broker, String apikey, String topic, Tracer tracer, EventStreamsSpanDecorator spanDecorator) {
+        	//Initialize Kafka Consumer
+        	KafkaConsumer<String, String> bareConsumer = new KafkaConsumer<>(getClientConfiguration(broker, apikey, false));
+        	
+            // Wrap the local KafkaProducer with a TracingKafkaProduer that adds the required tags
+            TracingKafkaConsumerBuilder<String, String> cBuilder = new TracingKafkaConsumerBuilder<>(bareConsumer, tracer);
+            cBuilder.withDecorators(Arrays.asList(SpanDecorator.STANDARD_TAGS, spanDecorator));
+            kafkaConsumer = cBuilder.build();
+                        
             kafkaConsumer.subscribe(Collections.singletonList(topic), new ConsumerRebalanceListener() {
 
                 @Override

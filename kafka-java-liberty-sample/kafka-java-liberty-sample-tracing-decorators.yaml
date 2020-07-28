@@ -1,0 +1,70 @@
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: kafka-java-liberty-sample-tracing-decorators
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+        app: kafka-java-liberty-sample-tracing-decorators
+  template:
+    metadata:
+      labels:
+        app: kafka-java-liberty-sample-tracing-decorators
+    spec:
+      restartPolicy: Always
+      containers:
+        - image: osowski/kafka-java-liberty-sample:tracing-decorators
+          imagePullPolicy: Always
+          name: liberty-sample
+          env:
+          - name: VCAP_SERVICES
+            valueFrom:
+                secretKeyRef:
+                  name: eventstreams-binding
+                  key: binding
+          - name: JAEGER_SERVICE_NAME
+            value: kafka-tracing-decorators
+          - name: JAEGER_ENDPOINT
+            value: http://reo-jaeger-collector:14268/api/traces
+          - name: JAEGER_SAMPLER_TYPE
+            value: const
+          - name: JAEGER_SAMPLER_PARAM
+            value: "1"
+          ports:
+          - containerPort: 9080
+            name: http
+            protocol: TCP
+  revisionHistoryLimit: 1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-java-liberty-sample-tracing-decorators
+  labels:
+    app: kafka-java-liberty-sample-tracing-decorators
+spec:
+  ports:
+    - name: http
+      protocol: TCP
+      port: 9080
+      targetPort: 9080
+  selector:
+    app: kafka-java-liberty-sample-tracing-decorators
+---
+  apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    labels:
+      app: kafka-java-liberty-sample-tracing-decorators
+    name: kafka-java-liberty-sample-tracing-decorators
+  spec:
+    #tls:
+    #  termination: reencrypt
+    to:
+      kind: Service
+      name: kafka-java-liberty-sample-tracing-decorators
+      weight: 100
+    wildcardPolicy: None
+---
